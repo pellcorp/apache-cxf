@@ -19,16 +19,19 @@
 package org.apache.cxf.systest.jms.tx;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.jws.WebService;
 
-
 import org.apache.cxf.systest.jms.GreeterImplDocBase;
+import org.apache.hello_world_doc_lit.PingMeFault;
+import org.apache.hello_world_doc_lit.types.FaultDetail;
 
 @WebService(endpointInterface = "org.apache.hello_world_doc_lit.Greeter")
 public class GreeterImplWithTransaction extends GreeterImplDocBase {
     private AtomicBoolean flag = new AtomicBoolean(true);
-       
+    private AtomicInteger countRetry = new AtomicInteger();
+    
     public String greetMe(String requestType) {
         //System.out.println("Reached here :" + requestType);
         if ("Bad guy".equals(requestType)) {
@@ -43,4 +46,12 @@ public class GreeterImplWithTransaction extends GreeterImplDocBase {
         return "Hello " + requestType;
     }
     
+    public void pingMe() throws PingMeFault {
+        int value = countRetry.getAndIncrement();
+        
+        FaultDetail faultDetail = new FaultDetail();
+        faultDetail.setMajor((short)2);
+        faultDetail.setMinor((short)1);
+        throw new PingMeFault("Retry Count " + value, faultDetail);
+    }
 }

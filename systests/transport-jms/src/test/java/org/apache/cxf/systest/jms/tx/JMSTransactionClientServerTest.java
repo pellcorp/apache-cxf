@@ -82,6 +82,7 @@ public class JMSTransactionClientServerTest extends AbstractBusClientServerTestB
         launchServer(new Server());
         createStaticBus();
     }
+    
     @AfterClass
     public static void clearProperty() {
         System.clearProperty("EmbeddedBrokerURL");
@@ -96,6 +97,9 @@ public class JMSTransactionClientServerTest extends AbstractBusClientServerTestB
         return q;
     }
     
+    // this test uses the jaxws:endpoint defined in the xml file and uses the transactionalImplementor
+    // definition, which takes care of the transaction management, including committing the jms
+    // transaction even on a soap fault.
     @Test
     public void testDocBasicConnection() throws Exception {
         QName serviceName = getServiceName(new QName("http://apache.org/hello_world_doc_lit", 
@@ -111,6 +115,9 @@ public class JMSTransactionClientServerTest extends AbstractBusClientServerTestB
         Greeter greeter = service.getPort(portName, Greeter.class);
         doService(greeter, true);
     }
+    
+    // this test uses the endpoint created in the run() method above.  it registers a standard
+    // JMSTransactionManager
     @Test
     public void testNonAopTransaction() throws Exception {
         JaxWsProxyFactoryBean factory = new JaxWsProxyFactoryBean();
@@ -130,29 +137,34 @@ public class JMSTransactionClientServerTest extends AbstractBusClientServerTestB
         factory.getFeatures().add(jmsConfigFeature);
 
         Greeter greeter = (Greeter)factory.create();
-        doService(greeter, false);
-    }    
+        doService(greeter, true);
+    }
+    
     public void doService(Greeter greeter, boolean doEx) throws Exception {
-
-        String response1 = new String("Hello ");
+        String response1 = "Hello ";
         
         try {
-                          
             String greeting = greeter.greetMe("Good guy");
             assertNotNull("No response received from service", greeting);
             String exResponse = response1 + "Good guy";
-            assertEquals("Get unexcpeted result", exResponse, greeting);
+            assertEquals("Get unexpected result", exResponse, greeting);
 
             greeting = greeter.greetMe("Bad guy");
+            // the code has a boolean flag that switches when the method is retried
+            // so this confirms that the runtime exception did cause message to be 
+            // rolled back.
             assertNotNull("No response received from service", greeting);
             exResponse = response1 + "[Bad guy]";
-            assertEquals("Get unexcpeted result", exResponse, greeting);
+            assertEquals("Get unexpected result", exResponse, greeting);
             
             if (doEx) {
                 try {
                     greeter.pingMe();
                     fail("Should have thrown FaultException");
                 } catch (PingMeFault ex) {
+                    // this test confirms that the pingMe method was not retried
+                    // even though a fault was thrown.
+                    assertEquals("Retry Count 0", ex.getMessage());
                     assertNotNull(ex.getFaultInfo());
                 }
             }
@@ -160,5 +172,4 @@ public class JMSTransactionClientServerTest extends AbstractBusClientServerTestB
             throw (Exception)ex.getCause();
         }
     }
-
 }

@@ -238,36 +238,32 @@ public class JMSDestination extends AbstractMultiplexDestination
                 }
                 JCATransactionalMessageListenerContainer.ENDPOINT_LOCAL.remove();
             }
-
-            // handle the incoming message
-            incomingObserver.onMessage(inMessage);
+            
+            try {
+                // set the session into the exchange so that it can be accessed in sendExchange
+                if (inMessage.getExchange() != null) {
+                    inMessage.getExchange().put(Session.class, session);
+                }
+                
+                // handle the incoming message
+                incomingObserver.onMessage(inMessage);
+            } finally {
+                // cleanup session as we don't need it here anymore
+                if (inMessage.getExchange() != null) {
+                    inMessage.getExchange().remove(Session.class);
+                }
+            }
             
             if (inMessage.getExchange() != null 
                 && inMessage.getExchange().getInMessage() != null) {
                 inMessage = inMessage.getExchange().getInMessage();
             }
-            //need to propagate any exceptions back to Spring container 
-            //so transactions can occur
-            if (inMessage.getContent(Exception.class) != null && session != null) {
-                PlatformTransactionManager m = jmsConfig.getTransactionManager();
-                if (m != null) {
-                    TransactionStatus status = m.getTransaction(null);
-                    JmsResourceHolder resourceHolder =
-                        (JmsResourceHolder) TransactionSynchronizationManager
-                            .getResource(jmsConfig.getConnectionFactory());
-                    boolean trans = resourceHolder == null 
-                        || !resourceHolder.containsSession(session);
-                    if (status != null && !status.isCompleted() && trans) {
-                        Exception ex = inMessage.getContent(Exception.class);
-                        if (ex.getCause() instanceof RuntimeException) {
-                            throw (RuntimeException)ex.getCause();
-                        } else {
-                            throw new RuntimeException(ex);
-                        }
-                    }
-                }
-            }
             
+            //need to propagate any exceptions back to Spring container so transactions can occur
+            RuntimeException ex = getRollbackRuntimeException(inMessage, session);
+            if (ex != null) {
+                throw ex;
+            }
         } catch (SuspendedInvocationException ex) {
             getLogger().log(Level.FINE, "Request message has been suspended");
         } catch (UnsupportedEncodingException ex) {
@@ -282,14 +278,47 @@ public class JMSDestination extends AbstractMultiplexDestination
         }
     }
 
+    private RuntimeException getRollbackRuntimeException(Message inMessage, Session session) {
+        if (inMessage.getContent(Exception.class) != null && session != null) {
+            PlatformTransactionManager m = jmsConfig.getTransactionManager();
+            if (m != null) {
+                TransactionStatus status = m.getTransaction(null);
+                
+                JmsResourceHolder resourceHolder =
+                    (JmsResourceHolder) TransactionSynchronizationManager
+                        .getResource(jmsConfig.getConnectionFactory());
+                
+                boolean trans = resourceHolder == null || !resourceHolder.containsSession(session);
+                
+                if (status != null && !status.isCompleted() && trans) {
+                    Exception ex = inMessage.getContent(Exception.class);
+                    if (ex.getCause() instanceof RuntimeException) {
+                        return (RuntimeException)ex.getCause();
+                    } else if (ex.getCause() instanceof Exception) {
+                        getLogger().log(Level.FINE, "Checked Exception ignored");
+                        return null;
+                    } else {
+                        return new RuntimeException(ex);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    
     public void sendExchange(Exchange exchange, final Object replyObj) {
         if (exchange.isOneWay()) {
             //Don't need to send anything
             return;
         }
         Message inMessage = exchange.getInMessage();
-        final Message outMessage = exchange.getOutMessage();
 
+        // if the incoming message resulted in a rollback exception, abort creation of the outgoing message.
+        if (getRollbackRuntimeException(inMessage, exchange.get(Session.class)) != null) {
+            return;
+        }
+        
+        final Message outMessage = exchange.getOutMessage();
         try {
             final JMSMessageHeadersType messageProperties = (JMSMessageHeadersType)outMessage
                 .get(JMSConstants.JMS_SERVER_RESPONSE_HEADERS);
